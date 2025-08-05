@@ -1,0 +1,43 @@
+{
+    "active_game": "Valorant",
+    "Valorant": {
+        "monitor_region": {
+            "top": 15,
+            "left": 921,
+            "width": 81,
+            "height": 78
+        },
+        "visual_confidence": 0.8,
+        "spike_duration": 45,
+        "defuse_warning_time": 7
+    },
+    "CS2": {
+        "monitor_region": {
+            "top": 0,
+            "left": 913,
+            "width": 94,
+            "height": 46
+        },
+        "visual_confidence": 0.8,
+        "spike_duration": 40,
+        "defuse_warning_time": 10
+    },
+    "global_settings": {
+        "manual_adjustment_ms": 100,
+        "timer_font_size": 40,
+        "timer_opacity": 0.75,
+        "gui_opacity": 0.9,
+        "gui_color": "#002e83",
+        "timer_colors": {
+            "normal": "#FFFFFF",
+            "mid": "#FFFF00",
+            "warn": "#FFA500",
+            "danger": "#FF0000"
+        },
+        "key_shortcuts": {
+            "timer_up": "page up",
+            "timer_down": "page down",
+            "timer_stop": "home"
+        }
+    }
+}
