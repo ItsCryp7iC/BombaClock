@@ -32,9 +32,14 @@ This tool is designed to be safe and compliant with anti-cheat systems like Vang
 4.  **Customize:**
     * Use the sliders and buttons in the settings window to adjust the timer's appearance and hotkeys to your liking.
 
+## Acknowledgements
+
+This project was developed with assistance from Google's AI **Gemini 2.5 Pro**. The core logic, features, and final implementation were directed and completed by the project author.
+
 ## Disclaimer
 
 This application is designed to be safe and avoid triggering anti-cheat systems like Vanguard and VAC. It operates by passively reading screen pixels and listening for keyboard inputs, similar to other legitimate software like OBS and Discord. It **does not** read game memory, modify game files, or send any automated inputs to the game.
 
 However, the use of any third-party application is at your own risk. I am not responsible for any account suspensions.
+
 
