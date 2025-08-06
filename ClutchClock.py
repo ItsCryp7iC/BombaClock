@@ -19,14 +19,14 @@ from PyQt6.QtGui import QFont, QColor
 DEFAULT_CONFIG = {
     "active_game": "Valorant",
     "Valorant": {
-        "monitor_region": {"top": 15, "left": 921, "width": 81, "height": 78},
-        "visual_confidence": 0.8,
+        "monitor_region": {"top": 16, "left": 919, "width": 84, "height": 76},
+        "visual_confidence": 0.25,
         "spike_duration": 45,
         "defuse_warning_time": 7
     },
     "CS2": {
         "monitor_region": {"top": 0, "left": 913, "width": 94, "height": 46},
-        "visual_confidence": 0.8,
+        "visual_confidence": 0.5,
         "spike_duration": 40,
         "defuse_warning_time": 10
     },
@@ -237,7 +237,7 @@ class TimerOverlayWindow(QWidget):
         self.setWindowOpacity(config['global_settings']['timer_opacity'])
 
         layout = QVBoxLayout(self)
-        self.timer_label = QLabel("WAITING", self)
+        self.timer_label = QLabel("--", self)
         self.font = QFont("Arial", config['global_settings']['timer_font_size'], QFont.Weight.Bold)
         self.timer_label.setFont(self.font)
         self.timer_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -260,7 +260,7 @@ class TimerOverlayWindow(QWidget):
         self.timer_label.setFont(self.font)
 
     def reset(self):
-        self.update_display("WAITING", config["global_settings"]["timer_colors"]["normal"])
+        self.update_display("--", config["global_settings"]["timer_colors"]["normal"])
 
     def mousePressEvent(self, event): self.old_pos = event.globalPosition().toPoint()
     def mouseMoveEvent(self, event):
