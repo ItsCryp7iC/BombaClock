@@ -165,28 +165,34 @@ class TimerLogic(QThread):
     def __init__(self):
         super().__init__()
         self.game_config = config[config['active_game']]
-        self.time_left = float(self.game_config["spike_duration"])
         self.lock = threading.Lock()
         self.running = True
+        self.end_time = time.monotonic() + float(self.game_config["spike_duration"])
 
     def run(self):
         last_displayed_time = -1
         while self.running:
             with self.lock:
-                if self.time_left < 0: break
-                current_display_time = int(round(self.time_left))
+                current_time = time.monotonic()
+                if current_time >= self.end_time:
+                    break
+                
+                time_left = self.end_time - current_time
+                current_display_time = int(round(time_left))
+
             if current_display_time != last_displayed_time:
                 self.update_timer_display.emit(str(current_display_time), self.get_color_for_time(current_display_time))
                 last_displayed_time = current_display_time
+            
             time.sleep(0.05)
-            with self.lock:
-                self.time_left -= 0.05
+
         if self.running:
+            self.update_timer_display.emit("0", self.get_color_for_time(0))
             self.timer_finished.emit()
 
     def adjust_time(self, amount):
         with self.lock:
-            self.time_left = max(0.0, min(float(self.game_config["spike_duration"]), self.time_left + amount))
+            self.end_time += amount
 
     def get_color_for_time(self, seconds):
         colors = config["global_settings"]["timer_colors"]
