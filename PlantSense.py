@@ -8,26 +8,37 @@ import numpy as np
 import cv2
 import mss
 import keyboard
+import subprocess # Added for robust restart
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import winreg 
 from PyQt6.QtWidgets import (QApplication, QLabel, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QTextEdit, QFrame, QGraphicsOpacityEffect,
                              QColorDialog, QGroupBox, QFormLayout, QGraphicsDropShadowEffect, QSizePolicy,
-                             QSlider, QStatusBar)
+                             QSlider, QStatusBar, QMessageBox, QSpinBox)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPropertyAnimation, QEasingCurve, QPoint
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtGui import QFont, QColor, QIcon, QFontDatabase, QScreen
+
+# --- PRESET MONITOR REGIONS ---
+PRESET_REGIONS = {
+    "Valorant": {
+        "1080p": {"top": 14, "left": 918, "width": 86, "height": 81},
+        "1440p": {"top": 21, "left": 1225, "width": 111, "height": 10},
+        "768p": {"top": 11, "left": 654, "width": 62, "height": 56}
+    }
+}
+
 
 # --- DEFAULT CONFIGURATION ---
 DEFAULT_CONFIG = {
     "active_game": "Valorant",
     "Valorant": {
-        "monitor_region": {"top": 16, "left": 919, "width": 84, "height": 76},
+        "monitor_region": {"top": 14, "left": 918, "width": 86, "height": 81},
         "visual_confidence": 0.25,
-        "spike_duration": 45,
+        "spike_duration": 45.0,
         "defuse_warning_time": 7
     },
     "CS2": {
-        "monitor_region": {"top": 0, "left": 913, "width": 94, "height": 46},
-        "visual_confidence": 0.5,
-        "spike_duration": 40,
+        "spike_duration": 40.0,
         "defuse_warning_time": 10
     },
     "global_settings": {
@@ -77,86 +88,113 @@ def save_config(config_data):
 
 config = load_config()
 
-class VisualListener(QThread):
-    spike_detected = pyqtSignal(float)
+class GameListener(QThread):
+    bomb_planted = pyqtSignal(float)
     critical_error = pyqtSignal(str)
     log_message = pyqtSignal(str)
     update_confidence = pyqtSignal(float)
+    update_debug_frame = pyqtSignal(object) 
 
     def __init__(self):
         super().__init__()
         self.debug_mode = False
-        self.debug_window_active = False
         self.running = True
-        self.load_template()
+        self.gsi_server = None
+        if config['active_game'] == 'Valorant':
+            self.load_template()
 
     def load_template(self):
         game = config['active_game']
-        template_filename = 'valorant_spike.png' if game == 'Valorant' else 'cs2_c4.png'
-        template_path = resource_path(template_filename)
-        
-        template_rgba = cv2.imread(template_path, cv2.IMREAD_UNCHANGED)
-        if template_rgba is None:
-            raise FileNotFoundError(f"Could not load template image at: {template_path}")
-        if len(template_rgba.shape) < 3 or template_rgba.shape[2] != 4:
-            self.template = cv2.cvtColor(template_rgba, cv2.COLOR_BGR2RGB)
-            self.mask = None
-        else:
-            self.template = template_rgba[:, :, :3]
-            self.mask = template_rgba[:, :, 3]
-        self.th, self.tw = self.template.shape[:2]
+        if game == 'Valorant':
+            preset = self.get_active_preset()
+            template_filename = f"valorant_{preset}.png"
+            template_path = resource_path(template_filename)
+            
+            template_rgba = cv2.imread(template_path, cv2.IMREAD_UNCHANGED)
+            if template_rgba is None:
+                raise FileNotFoundError(f"Could not load template: {template_filename}")
+            if len(template_rgba.shape) < 3 or template_rgba.shape[2] != 4:
+                self.template = cv2.cvtColor(template_rgba, cv2.COLOR_BGR2RGB)
+                self.mask = None
+            else:
+                self.template = template_rgba[:, :, :3]
+                self.mask = template_rgba[:, :, 3]
+            self.th, self.tw = self.template.shape[:2]
+
+    def get_active_preset(self):
+        active_game = config['active_game']
+        current_region = config[active_game]['monitor_region']
+        for preset, region in PRESET_REGIONS[active_game].items():
+            if region == current_region:
+                return preset
+        return "1080p"
 
     def run(self):
-        self.log_message.emit(f"Listener started for {config['active_game']}. Scanning for bomb plant...")
+        self.log_message.emit(f"Listener started for {config['active_game']}.")
+        if config['active_game'] == 'Valorant':
+            self.run_valorant_scanner()
+        else: # CS2
+            self.run_cs2_gsi_listener()
+
+    def run_valorant_scanner(self):
+        self.log_message.emit("Scanning screen for bomb plant...")
         with mss.mss() as sct:
             while self.running:
                 try:
-                    game_config = config[config['active_game']]
+                    game_config = config['Valorant']
                     img = sct.grab(game_config["monitor_region"])
-                    
                     screen_bgr = np.array(img)[:, :, :3]
                     
-                    sh, sw = screen_bgr.shape[:2]
-                    if self.th > sh or self.tw > sw:
-                        error_msg = (f"ERROR: Template image ({self.tw}x{self.th}) is larger than "
-                                     f"the capture region ({sw}x{sh}) for {config['active_game']}. "
-                                     "Please use the 'Calibrate' button.")
-                        self.critical_error.emit(error_msg)
-                        self.stop()
-                        break
-
                     res = cv2.matchTemplate(screen_bgr, self.template, cv2.TM_CCOEFF_NORMED, mask=self.mask)
                     _, max_val, _, max_loc = cv2.minMaxLoc(res)
-
                     self.update_confidence.emit(max_val)
 
                     if self.debug_mode:
                         debug_screen = screen_bgr.copy()
                         if max_val > 0.4:
                             cv2.rectangle(debug_screen, max_loc, (max_loc[0] + self.tw, max_loc[1] + self.th), (0, 255, 0), 2)
-                        cv2.imshow("Debug - Live Capture", debug_screen)
-                        cv2.waitKey(1)
-                        self.debug_window_active = True
-                    elif self.debug_window_active:
-                        cv2.destroyAllWindows()
-                        self.debug_window_active = False
+                        self.update_debug_frame.emit(debug_screen)
 
                     if max_val > game_config["visual_confidence"]:
-                        self.spike_detected.emit(max_val)
-                        time.sleep(1) 
-
+                        self.bomb_planted.emit(max_val)
+                        time.sleep(1)
                 except Exception as e:
-                    self.log_message.emit(f"Error in visual listener: {e}")
-                    time.sleep(2)
+                    self.log_message.emit(f"Error in Valorant scanner: {e}")
                 time.sleep(0.25)
-        if self.debug_window_active:
-            cv2.destroyAllWindows()
+
+    def run_cs2_gsi_listener(self):
+        self.log_message.emit("Starting GSI server for CS2...")
+        
+        class GSIRequestHandler(BaseHTTPRequestHandler):
+            def do_POST(handler):
+                length = int(handler.headers.get('content-length'))
+                body = handler.rfile.read(length)
+                payload = json.loads(body.decode('utf-8'))
+                
+                bomb_state = payload.get('round', {}).get('bomb')
+                if bomb_state == 'planted':
+                    self.bomb_planted.emit(1.0) # GSI is 100% confidence
+                
+                handler.send_response(200)
+                handler.end_headers()
+
+            def log_message(self, format, *args):
+                return # Suppress console logs from the server
+
+        try:
+            self.gsi_server = HTTPServer(('127.0.0.1', 3000), GSIRequestHandler)
+            self.log_message.emit("GSI server running. Waiting for CS2 data...")
+            self.gsi_server.serve_forever()
+        except Exception as e:
+            self.critical_error.emit(f"Could not start GSI server: {e}. Is another app using port 3000?")
 
     def set_debug_mode(self, is_enabled):
         self.debug_mode = is_enabled
 
     def stop(self):
         self.running = False
+        if self.gsi_server:
+            self.gsi_server.shutdown()
 
 class TimerLogic(QThread):
     update_timer_display = pyqtSignal(str, str)
@@ -165,28 +203,34 @@ class TimerLogic(QThread):
     def __init__(self):
         super().__init__()
         self.game_config = config[config['active_game']]
-        self.time_left = float(self.game_config["spike_duration"])
         self.lock = threading.Lock()
         self.running = True
+        self.end_time = time.monotonic() + float(self.game_config["spike_duration"])
 
     def run(self):
         last_displayed_time = -1
         while self.running:
             with self.lock:
-                if self.time_left < 0: break
-                current_display_time = int(round(self.time_left))
+                current_time = time.monotonic()
+                if current_time >= self.end_time:
+                    break
+                
+                time_left = self.end_time - current_time
+                current_display_time = int(round(time_left))
+
             if current_display_time != last_displayed_time:
                 self.update_timer_display.emit(str(current_display_time), self.get_color_for_time(current_display_time))
                 last_displayed_time = current_display_time
+            
             time.sleep(0.05)
-            with self.lock:
-                self.time_left -= 0.05
+
         if self.running:
+            self.update_timer_display.emit("0", self.get_color_for_time(0))
             self.timer_finished.emit()
 
     def adjust_time(self, amount):
         with self.lock:
-            self.time_left = max(0.0, min(float(self.game_config["spike_duration"]), self.time_left + amount))
+            self.end_time += amount
 
     def get_color_for_time(self, seconds):
         colors = config["global_settings"]["timer_colors"]
@@ -233,7 +277,12 @@ class TimerOverlayWindow(QWidget):
         super().__init__()
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setGeometry(100, 100, 450, 150)
+        
+        screen_geometry = QApplication.primaryScreen().geometry()
+        initial_x = (screen_geometry.width() - 450) // 2
+        initial_y = 150
+        self.setGeometry(initial_x, initial_y, 450, 150)
+        
         self.setWindowOpacity(config['global_settings']['timer_opacity'])
 
         layout = QVBoxLayout(self)
@@ -269,11 +318,13 @@ class TimerOverlayWindow(QWidget):
         self.old_pos = event.globalPosition().toPoint()
 
 class SettingsWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, title_font_family):
         super().__init__()
+        self.title_font_family = title_font_family
         self.is_timer_active = False
         self.key_listen_button = None
         self.timer_overlay = TimerOverlayWindow()
+        self.debug_window_visible = False
         self.initUI()
         self.setup_listeners()
         self.timer_overlay.show()
@@ -284,6 +335,8 @@ class SettingsWindow(QMainWindow):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowOpacity(config['global_settings']['gui_opacity'])
         self.update_stylesheet()
+        
+        self.setWindowIcon(QIcon(resource_path('icon.ico')))
 
         central_widget = QWidget()
         central_widget.setObjectName("CentralWidget")
@@ -304,21 +357,39 @@ class SettingsWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.confidence_label = QLabel("Confidence: N/A")
         self.status_bar.addPermanentWidget(self.confidence_label)
+        
+        self.confidence_spinbox.valueChanged.connect(self.update_confidence_threshold)
+        self.update_ui_for_game()
 
     def update_stylesheet(self):
         self.setStyleSheet(f"""
             #CentralWidget {{ background-color: {config['global_settings']['gui_color']}; border-radius: 10px; }}
             QWidget {{ color: #ecf0f1; }}
+            QMessageBox QLabel, QMessageBox QPushButton {{ color: black; }}
             QGroupBox {{ font-weight: bold; border: 1px solid #4a6278; margin-top: 10px; border-radius: 5px;}}
             QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }}
             QTextEdit {{ background-color: #34495e; color: #ecf0f1; border: 1px solid #2c3e50; border-radius: 3px; }}
             QStatusBar {{ background-color: {config['global_settings']['gui_color']}; border-top: 1px solid #4a6278; }}
             #TitleBar QPushButton {{ background-color: transparent; border: none; font-size: 14px; width: 30px; height: 30px; }}
             #TitleBar QPushButton:hover {{ background-color: #4a6278; }}
-            #SettingsPanel QPushButton, #GameSelectPanel QPushButton {{ background-color: #34495e; border: 1px solid #4a6278; padding: 5px; border-radius: 3px;}}
-            #SettingsPanel QPushButton:hover, #GameSelectPanel QPushButton:hover {{ background-color: #4a6278; }}
+            #SettingsPanel QPushButton, #GameSelectPanel QPushButton, #PresetsPanel QPushButton {{ 
+                background-color: #34495e; border: 1px solid #4a6278; padding: 5px; border-radius: 3px;
+            }}
+            #SettingsPanel QPushButton:hover, #GameSelectPanel QPushButton:hover, #PresetsPanel QPushButton:hover {{ 
+                background-color: #4a6278; 
+            }}
+            #SettingsPanel QPushButton:disabled {{
+                background-color: #2c3e50;
+                color: #7f8c8d;
+            }}
             #KeybindBtn:focus {{ background-color: #e67e22; }}
-            #GameSelectPanel QPushButton[checkable=true]:checked {{ background-color: #16a085; border-color: #1abc9c; }}
+            #GameSelectPanel QPushButton[checkable=true]:checked, #PresetsPanel QPushButton[checkable=true]:checked {{ 
+                background-color: #16a085; border-color: #1abc9c; 
+            }}
+            QSpinBox {{
+                background-color: #ecf0f1;
+                color: black;
+            }}
         """)
 
     def create_title_bar(self, parent_layout):
@@ -327,8 +398,10 @@ class SettingsWindow(QMainWindow):
         title_bar.setFixedHeight(40)
         title_bar_layout = QHBoxLayout(title_bar)
         title_bar_layout.setContentsMargins(10, 0, 0, 0)
-        title = QLabel("ClutchClock")
-        title.setStyleSheet("font-weight: bold;")
+        
+        title = QLabel("PlantSense")
+        title_font = QFont(self.title_font_family, 16)
+        title.setFont(title_font)
         
         self.debug_btn = QPushButton("Bug", toolTip="Toggle Debug Mode")
         self.debug_btn.setFont(QFont("Webdings"))
@@ -382,20 +455,50 @@ class SettingsWindow(QMainWindow):
         group_box.setObjectName("SettingsPanel")
         layout = QVBoxLayout()
 
-        calibrate_btn = QPushButton("Calibrate Capture Region")
-        calibrate_btn.clicked.connect(self.calibrate_region)
-        layout.addWidget(calibrate_btn)
+        self.presets_group = QGroupBox("Resolution Presets")
+        self.presets_group.setObjectName("PresetsPanel")
+        presets_layout = QHBoxLayout()
+        self.preset_1080p_btn = QPushButton("1080p")
+        self.preset_1440p_btn = QPushButton("1440p")
+        self.preset_768p_btn = QPushButton("768p")
+        
+        for btn in [self.preset_1080p_btn, self.preset_1440p_btn, self.preset_768p_btn]:
+            btn.setCheckable(True)
 
-        timer_controls_layout = QHBoxLayout()
-        timer_down_btn = QPushButton("Timer Down", clicked=lambda: self.adjust_timer(-config["global_settings"]["manual_adjustment_ms"]))
+        self.preset_1080p_btn.clicked.connect(lambda: self.set_region_preset("1080p"))
+        self.preset_1440p_btn.clicked.connect(lambda: self.set_region_preset("1440p"))
+        self.preset_768p_btn.clicked.connect(lambda: self.set_region_preset("768p"))
+        
+        presets_layout.addWidget(self.preset_1080p_btn)
+        presets_layout.addWidget(self.preset_1440p_btn)
+        presets_layout.addWidget(self.preset_768p_btn)
+        self.presets_group.setLayout(presets_layout)
+        layout.addWidget(self.presets_group)
+
         self.stop_timer_btn = QPushButton("Stop Timer", clicked=self.force_stop_timer, enabled=False)
-        timer_up_btn = QPushButton("Timer Up", clicked=lambda: self.adjust_timer(config["global_settings"]["manual_adjustment_ms"]))
-        timer_controls_layout.addWidget(timer_down_btn)
-        timer_controls_layout.addWidget(self.stop_timer_btn)
-        timer_controls_layout.addWidget(timer_up_btn)
-        layout.addLayout(timer_controls_layout)
+        layout.addWidget(self.stop_timer_btn)
+
+        duration_layout = QHBoxLayout()
+        self.duration_label = QLabel()
+        self.update_duration_label()
+        
+        timer_down_btn = QPushButton("Timer Down", clicked=lambda: self.adjust_duration(-config["global_settings"]["manual_adjustment_ms"]))
+        timer_up_btn = QPushButton("Timer Up", clicked=lambda: self.adjust_duration(config["global_settings"]["manual_adjustment_ms"]))
+        
+        duration_layout.addWidget(self.duration_label)
+        duration_layout.addStretch()
+        duration_layout.addWidget(timer_down_btn)
+        duration_layout.addWidget(timer_up_btn)
+        layout.addLayout(duration_layout)
         
         form_layout = QFormLayout()
+        
+        self.confidence_spinbox = QSpinBox()
+        self.confidence_spinbox.setRange(1, 100)
+        self.confidence_spinbox.setSuffix("%")
+        self.confidence_label_widget = QLabel("Confidence Threshold:")
+        form_layout.addRow(self.confidence_label_widget, self.confidence_spinbox)
+
         self.timer_size_slider = self.create_slider(20, 150, config['global_settings']['timer_font_size'], self.update_timer_size)
         self.timer_opacity_slider = self.create_slider(20, 100, int(config['global_settings']['timer_opacity'] * 100), self.update_timer_opacity)
         self.gui_color_btn = QPushButton()
@@ -419,7 +522,7 @@ class SettingsWindow(QMainWindow):
         layout.addLayout(keybind_layout)
         group_box.setLayout(layout)
         parent_layout.addWidget(group_box)
-
+        
     def create_slider(self, min_val, max_val, current_val, callback):
         slider = QSlider(Qt.Orientation.Horizontal)
         slider.setRange(min_val, max_val)
@@ -444,9 +547,21 @@ class SettingsWindow(QMainWindow):
         self.setWindowOpacity(opacity)
         save_config(config)
 
+    def update_confidence_threshold(self, value):
+        active_game = config['active_game']
+        confidence = value / 100.0
+        config[active_game]['visual_confidence'] = confidence
+        save_config(config)
+        self.log_message(f"Set {active_game} confidence to {value}%")
+
     def pick_gui_color(self):
-        new_color = QColorDialog.getColor(QColor(config["global_settings"]["gui_color"]), self)
-        if new_color.isValid():
+        color_dialog = QColorDialog(self)
+        color_dialog.setStyleSheet("QWidget { color: black; }")
+        current_color = QColor(config["global_settings"]["gui_color"])
+        color_dialog.setCurrentColor(current_color)
+        
+        if color_dialog.exec():
+            new_color = color_dialog.selectedColor()
             config["global_settings"]["gui_color"] = new_color.name()
             self.gui_color_btn.setStyleSheet(f"background-color: {config['global_settings']['gui_color']};")
             self.update_stylesheet()
@@ -478,48 +593,44 @@ class SettingsWindow(QMainWindow):
 
     def handle_hotkey(self, action):
         if action == "up":
-            self.adjust_timer(config["global_settings"]["manual_adjustment_ms"])
+            self.adjust_duration(config["global_settings"]["manual_adjustment_ms"])
         elif action == "down":
-            self.adjust_timer(-config["global_settings"]["manual_adjustment_ms"])
+            self.adjust_duration(-config["global_settings"]["manual_adjustment_ms"])
         elif action == "stop":
             self.force_stop_timer()
 
     def toggle_debug_mode(self, checked):
-        if hasattr(self, 'visual_thread'):
-            self.visual_thread.set_debug_mode(checked)
+        if hasattr(self, 'game_listener_thread'):
+            self.game_listener_thread.set_debug_mode(checked)
             self.log_message(f"Debug mode {'ON' if checked else 'OFF'}.")
+            if not checked and self.debug_window_visible:
+                cv2.destroyAllWindows()
+                self.debug_window_visible = False
 
-    def calibrate_region(self):
-        self.log_message("Pausing scanner for calibration...")
-        if hasattr(self, 'visual_thread'):
-            self.visual_thread.stop()
-            self.visual_thread.wait()
+    def show_debug_frame(self, frame):
+        cv2.imshow("Debug - Live Capture", frame)
+        cv2.waitKey(1)
+        self.debug_window_visible = True
 
-        self.log_message("Select bomb area and press ENTER or ESC.")
-        self.hide()
-        self.timer_overlay.hide()
-        time.sleep(0.5)
-
-        with mss.mss() as sct:
-            sct_img = sct.grab(sct.monitors[1])
-            img = np.array(sct_img)
-            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-
-        self.show()
-        self.timer_overlay.show()
-
-        roi = cv2.selectROI(f"Calibrate for {config['active_game']} (Press ENTER to confirm)", img, fromCenter=False)
-        cv2.destroyAllWindows()
-
-        if roi[2] > 0 and roi[3] > 0:
-            x, y, w, h = roi
-            config[config['active_game']]["monitor_region"] = {"top": int(y), "left": int(x), "width": int(w), "height": int(h)}
-            save_config(config)
-            self.log_message(f"New monitor region set for {config['active_game']}")
-        else:
-            self.log_message("Calibration cancelled.")
-
-        self.restart_visual_listener()
+    def set_region_preset(self, resolution):
+        msg_box = QMessageBox(self)
+        msg_box.setStyleSheet("QLabel, QPushButton { color: black; }")
+        msg_box.setWindowTitle("Restart Required")
+        msg_box.setText("Changing the resolution preset requires an application restart.")
+        msg_box.setInformativeText("Do you want to save and restart now?")
+        msg_box.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+        msg_box.setDefaultButton(QMessageBox.StandardButton.Ok)
+        
+        if msg_box.exec() == QMessageBox.StandardButton.Ok:
+            active_game = config['active_game']
+            if resolution in PRESET_REGIONS[active_game]:
+                new_region = PRESET_REGIONS[active_game][resolution]
+                config[active_game]["monitor_region"] = new_region
+                save_config(config)
+                self.log_message(f"Set {active_game} monitor region to {resolution} preset. Restarting...")
+                self.restart_application()
+            else:
+                self.log_message(f"No preset found for {resolution} in {active_game} profile.")
 
     def start_timer(self, confidence):
         if not self.is_timer_active:
@@ -538,11 +649,18 @@ class SettingsWindow(QMainWindow):
             self.reset_timer()
             self.log_message("Timer manually stopped.")
 
-    def adjust_timer(self, amount_ms):
-        if self.is_timer_active and hasattr(self, 'timer_thread'):
-            amount_s = amount_ms / 1000.0
-            self.timer_thread.adjust_time(amount_s)
-            self.log_message(f"Timer adjusted by {amount_ms:.0f} ms.")
+    def adjust_duration(self, amount_ms):
+        active_game = config['active_game']
+        amount_s = amount_ms / 1000.0
+        config[active_game]['spike_duration'] += amount_s
+        save_config(config)
+        self.update_duration_label()
+        self.log_message(f"Adjusted {active_game} duration to {config[active_game]['spike_duration']:.2f}s")
+
+    def update_duration_label(self):
+        active_game = config['active_game']
+        duration = config[active_game]['spike_duration']
+        self.duration_label.setText(f"Bomb Duration: {duration:.2f}s")
 
     def reset_timer(self):
         self.timer_overlay.reset()
@@ -566,7 +684,7 @@ class SettingsWindow(QMainWindow):
 
     def update_confidence_label(self, value):
         self.confidence_label.setText(f"Confidence: {value:.0%}")
-        if hasattr(self, 'visual_thread') and self.visual_thread.debug_mode:
+        if hasattr(self, 'game_listener_thread') and self.game_listener_thread.debug_mode:
             self.log_message(f"Debug Confidence: {value:.0%}")
 
     def keyPressEvent(self, event):
@@ -587,28 +705,67 @@ class SettingsWindow(QMainWindow):
         if config['active_game'] == game_name:
             return
         
-        self.valorant_btn.setChecked(game_name == "Valorant")
-        self.cs2_btn.setChecked(game_name == "CS2")
+        msg_box = QMessageBox(self)
+        msg_box.setStyleSheet("QLabel, QPushButton { color: black; }")
+        msg_box.setWindowTitle("Restart Required")
+        msg_box.setText(f"Switching the game profile to {game_name} requires a restart.")
+        msg_box.setInformativeText("Do you want to save and restart now?")
+        msg_box.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+        msg_box.setDefaultButton(QMessageBox.StandardButton.Ok)
         
-        config['active_game'] = game_name
-        save_config(config)
-        self.log_message(f"Switched to {game_name} profile.")
-        self.restart_visual_listener()
+        if msg_box.exec() == QMessageBox.StandardButton.Ok:
+            config['active_game'] = game_name
+            save_config(config)
+            self.log_message(f"Switched to {game_name} profile. Restarting...")
+            self.restart_application()
+        else:
+            self.valorant_btn.setChecked(config['active_game'] == "Valorant")
+            self.cs2_btn.setChecked(config['active_game'] == "CS2")
 
     def restart_visual_listener(self):
-        if hasattr(self, 'visual_thread'):
-            self.visual_thread.stop()
-            self.visual_thread.wait()
+        if hasattr(self, 'game_listener_thread'):
+            self.game_listener_thread.stop()
+            self.game_listener_thread.wait()
         
         try:
-            self.visual_thread = VisualListener()
-            self.visual_thread.spike_detected.connect(self.start_timer)
-            self.visual_thread.critical_error.connect(self.handle_critical_error)
-            self.visual_thread.log_message.connect(self.log_message)
-            self.visual_thread.update_confidence.connect(self.update_confidence_label)
-            self.visual_thread.start()
+            self.game_listener_thread = GameListener()
+            self.game_listener_thread.bomb_planted.connect(self.start_timer)
+            self.game_listener_thread.critical_error.connect(self.handle_critical_error)
+            self.game_listener_thread.log_message.connect(self.log_message)
+            self.game_listener_thread.update_confidence.connect(self.update_confidence_label)
+            self.game_listener_thread.update_debug_frame.connect(self.show_debug_frame)
+            self.game_listener_thread.start()
         except FileNotFoundError as e:
             self.log_message(f"ERROR: {e}. Make sure you have the correct template image for {config['active_game']}.")
+
+    def restart_application(self):
+        if hasattr(self, 'hotkey_thread'): self.hotkey_thread.stop()
+        if hasattr(self, 'game_listener_thread'): self.game_listener_thread.stop(); self.game_listener_thread.wait()
+        if hasattr(self, 'timer_thread') and self.timer_thread.isRunning(): self.timer_thread.stop(); self.timer_thread.wait()
+        
+        subprocess.Popen([sys.executable] + sys.argv)
+        self.close()
+
+    def update_preset_buttons(self):
+        active_game = config['active_game']
+        if active_game == 'Valorant':
+            current_region = config[active_game]['monitor_region']
+            self.preset_1080p_btn.setChecked(current_region == PRESET_REGIONS[active_game].get('1080p'))
+            self.preset_1440p_btn.setChecked(current_region == PRESET_REGIONS[active_game].get('1440p'))
+            self.preset_768p_btn.setChecked(current_region == PRESET_REGIONS[active_game].get('768p'))
+
+    def update_ui_for_game(self):
+        is_valorant = (config['active_game'] == 'Valorant')
+        self.presets_group.setVisible(is_valorant)
+        self.confidence_spinbox.setVisible(is_valorant)
+        self.confidence_label_widget.setVisible(is_valorant)
+        
+        if is_valorant:
+            self.confidence_spinbox.setValue(int(config['Valorant']['visual_confidence'] * 100))
+            self.update_preset_buttons()
+        else:
+            self.confidence_label.setText("Confidence: GSI")
+
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton: self.old_pos = event.globalPosition().toPoint()
@@ -621,15 +778,24 @@ class SettingsWindow(QMainWindow):
 
     def closeEvent(self, event):
         if hasattr(self, 'hotkey_thread'): self.hotkey_thread.stop()
-        if hasattr(self, 'visual_thread'): self.visual_thread.stop(); self.visual_thread.wait()
+        if hasattr(self, 'game_listener_thread'): self.game_listener_thread.stop(); self.game_listener_thread.wait()
         if hasattr(self, 'timer_thread') and self.timer_thread.isRunning(): self.timer_thread.stop(); self.timer_thread.wait()
         self.timer_overlay.close()
+        if self.debug_window_visible:
+            cv2.destroyAllWindows()
         event.accept()
         os._exit(0)
 
 def main():
     app = QApplication(sys.argv)
-    window = SettingsWindow()
+    
+    font_id = QFontDatabase.addApplicationFont(resource_path("MarckScript-Regular.ttf"))
+    if font_id != -1:
+        title_font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
+    else:
+        title_font_family = "Arial"
+
+    window = SettingsWindow(title_font_family)
     window.show()
     sys.exit(app.exec())
 
