@@ -1,6 +1,6 @@
-# ClutchClock ⏰
+# PlantSense ⏰
 
-ClutchClock is a smart, customizable bomb timer overlay for tactical shooters like Valorant and CS2. It uses passive, non-invasive screen recognition to automatically detect when the bomb is planted and displays a highly visible, configurable timer to help you make game-winning decisions in those crucial final seconds.
+PlantSense is a smart, customizable bomb timer overlay for tactical shooters like Valorant and CS2. It uses passive, non-invasive screen recognition to automatically detect when the bomb is planted and displays a highly visible, configurable timer to help you make game-winning decisions in those crucial final seconds.
 
 This tool is designed to be safe and compliant with anti-cheat systems like Vanguard and VAC, as it does not read game memory or modify any game files.
 
@@ -21,7 +21,7 @@ This tool is designed to be safe and compliant with anti-cheat systems like Vang
 ## How to Use
 
 1.  **Run the Application:**
-    * Launch `ClutchClock.exe`.
+    * Launch `PlantSense.exe`.
 
 2.  **Calibrate:**
     * The first time you run the app for a new game, click the **"Calibrate Capture Region"** button.
@@ -41,5 +41,6 @@ This project was developed with assistance from Google's AI **Gemini 2.5 Pro**. 
 This application is designed to be safe and avoid triggering anti-cheat systems like Vanguard and VAC. It operates by passively reading screen pixels and listening for keyboard inputs, similar to other legitimate software like OBS and Discord. It **does not** read game memory, modify game files, or send any automated inputs to the game.
 
 However, the use of any third-party application is at your own risk. I am not responsible for any account suspensions.
+
 
 
