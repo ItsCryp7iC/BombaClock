@@ -419,7 +419,7 @@ class SettingsWindow(QMainWindow):
         title_bar_layout = QHBoxLayout(title_bar)
         title_bar_layout.setContentsMargins(10, 0, 0, 0)
 
-        title = QLabel("PlantSense")
+        title = QLabel("BombaClock")
         title_font = QFont(self.title_font_family, 16)
         title.setFont(title_font)
 
@@ -822,7 +822,7 @@ class SettingsWindow(QMainWindow):
     
     # --- NEW METHOD: Automates firewall rule creation ---
     def check_and_add_firewall_rule(self):
-        rule_name = "PlantSense GSI"
+        rule_name = "BombaClock GSI"
         program_path = sys.executable
         
         try:
@@ -864,7 +864,7 @@ class SettingsWindow(QMainWindow):
 
     def setup_gsi_file(self):
         gsi_content = r'''
-"PlantSense GSI"
+"BombaClock GSI"
 {
     "uri"               "http://127.0.0.1:3000"
     "timeout"           "5.0"
@@ -909,7 +909,7 @@ class SettingsWindow(QMainWindow):
 
             if csgo_cfg_path and csgo_cfg_path.exists():
                 log_messages.append(f"Target CS2 config folder identified: {csgo_cfg_path}")
-                gsi_file_path = csgo_cfg_path / "gamestate_integration_plantsense.cfg"
+                gsi_file_path = csgo_cfg_path / "gamestate_integration_BombaClock.cfg"
                 log_messages.append(f"Attempting to write GSI file to: {gsi_file_path}")
 
                 with open(gsi_file_path, 'w') as f:
