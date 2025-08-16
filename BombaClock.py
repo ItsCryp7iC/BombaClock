@@ -26,7 +26,7 @@ from PyQt6.QtGui import QFont, QColor, QIcon, QFontDatabase, QScreen
 PRESET_REGIONS = {
     "Valorant": {
         "1080p": {"top": 14, "left": 918, "width": 86, "height": 81},
-        "1440p": {"top": 21, "left": 1225, "width": 111, "height": 10},
+        "1440p": {"top": 21, "left": 1225, "width": 111, "height": 105},
         "768p": {"top": 11, "left": 654, "width": 62, "height": 56}
     }
 }
